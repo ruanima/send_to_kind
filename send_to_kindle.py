@@ -4,38 +4,45 @@
     自动将epub转换成mobi推送到kindle
 '''
 
-
 import poplib
 import email
-import re 
+import re
 import base64
-import time 
-import os 
+import time
+import os
 import subprocess
 import smtplib
 from email import encoders
 from email.header import Header
 from email.mime.text import MIMEText
-from email.utils import parseaddr, formataddr
+from email.utils import parseaddr, formataddr, formatdate
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
+
 
 kindlegen = 'bin/kindle'
 
 check_interval = 30     # 邮件收取间隔时间
-from_addr = 'your_email@tom.com'   # 中转邮箱，需要将其添加到kindle的收信人列表
+# 中转邮箱，需要将其添加到kindle的收信人列表(有的邮箱推送会失败，原因不明)
+from_addr = 'your_email@tom.com'   
 password = os.environ['PASSWORD']    # 中转邮箱密码，从环境变量中获取
 pop3_server = 'pop.tom.com'
 smtp_server = 'smtp.tom.com'
-
+smtp_server_port = 25
+encryption = ''  # TLS, SSL, ''
 to_addr = 'your_email@kindle.cn'   # kindle推送收件邮箱
 
 
 def parse_attach_name(raw_name):
-    t = re.findall(r'(?<=\=\?)\w*(?=\?B)', raw_name)
+    '''
+    args:
+        raw_name: eg. =?gb18030?B?t8nN+bDNwOi1xMSpsOC7+i50eHQ=?=
+    '''
+    print(raw_name)
+    t = re.findall(r'(?<=\=\?)[\w\-]*(?=\?[bB])', raw_name)
     if t:
         encoding = t[0]
-        return base64.b64decode(raw_name.replace('=?{}?B?'.format(encoding), '', 1)).decode(encoding)
+        return base64.b64decode(raw_name[len(encoding) + 5:]).decode(encoding, errors='replace')
     else:
         return raw_name
 
@@ -53,7 +60,7 @@ def download_attach(mail):
         file.write(payload)
         file.close()
         t.append(file_name)
-    return t 
+    return t
 
 
 def convert_ebook(file_list):
@@ -62,38 +69,48 @@ def convert_ebook(file_list):
         base, ext = os.path.splitext(i)
         if not ext or ext.lower() != '.epub':
             t.append(i)
-        else:
+            continue
+        try:
             subprocess.check_call(['bin/kindlegen', '-locale', 'zh', '-c1', i])
+        except subprocess.CalledProcessError:
+            pass
+        if os.path.exists(base + '.mobi'):
             t.append(base + '.mobi')
-    return t 
+    return t
 
 
 def push_to_kindle(file_list):
-    def _format_addr(s):
-        name, addr = parseaddr(s)
-        return formataddr((Header(name, 'utf-8').encode(), addr))
-
-    if not file_list: 
+    if not file_list:
         return
 
     msg = MIMEMultipart()
-    msg['From'] = _format_addr(' <%s>' % from_addr)
-    msg['To'] = _format_addr('amazon kindle <%s>' % to_addr)
-    msg['Subject'] = Header('auto convert ebook and push to kindle', 'utf-8').encode()
+    msg['From'] = from_addr
+    msg['Reply-To'] = from_addr
+    msg['To'] = to_addr
+    msg['Date'] = formatdate(localtime=True)
+    msg['Subject'] = 'Sent to Kindle'
     msg.attach(MIMEText('send ebooks: \n {}'.format('\n'.join(file_list)), 'plain', 'utf-8'))
     print(file_list)
 
     for index, i in enumerate(file_list):
         with open(i, 'rb') as f:
             f_name = os.path.split(i)[-1]
-            mime = MIMEBase('application', 'octet-stream', filename=f_name)
-            mime.add_header('Content-Disposition', 'attachment', filename=f_name)
-            mime.add_header('Content-ID', '<{}>'.format(index))
-            mime.add_header('X-Attachment-Id', '{}'.format(index))
+            mime = MIMEBase('application', 'octet-stream', name=Header(f_name, 'utf-8').encode())
+            mime.add_header('Content-Disposition', 'attachment',
+                            filename=Header(f_name, 'utf-8').encode())
             mime.set_payload(f.read())
             encoders.encode_base64(mime)
             msg.attach(mime)
-    server = smtplib.SMTP(smtp_server, 25) 
+
+    if encryption == 'SSL':
+        server = smtplib.SMTP_SSL(smtp_server, smtp_server_port)
+    elif encryption == 'TLS':
+        server = smtplib.SMTP(smtp_server, smtp_server_port)
+        server.starttls()
+    else:
+        server = smtplib.SMTP(smtp_server, smtp_server_port)
+    server.ehlo()
+    # server.set_debuglevel(1)
     server.login(from_addr, password)
     server.sendmail(from_addr, [to_addr], msg.as_string())
     server.quit()
@@ -111,7 +128,7 @@ def main():
         print(server.list())
         mail_indexs = [i for i in server.list()[1] if i not in old_index_set]
         old_index_set.update(mail_indexs)
-        print(old_index_set)
+        print(old_index_set, flush=True)
         messages = [server.retr(int(n.split()[0])) for n in mail_indexs]
 
         emails = [email.message_from_string(b'\n'.join(message[1]).decode('utf8'))
