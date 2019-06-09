@@ -67,7 +67,7 @@ def convert_ebook(file_list):
     t = []
     for i in file_list:
         base, ext = os.path.splitext(i)
-        if not ext or ext.lower() != '.epub':
+        if not ext or ext.lower() not in ('.epub', '.mobi', 'azw3'):
             t.append(i)
             continue
         try:
